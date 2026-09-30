@@ -41,9 +41,9 @@ _NATIVE_CONTROLS = frozenset(
 
 
 def _has_native_controls(value):
-    return any(
-        token in _NATIVE_CONTROLS for token in re.findall(r"<[^>]*>|\[[^\]]*\]", value)
-    )
+    # Tokenizers recognize exact special-token substrings even inside other
+    # delimiters; a bracket-matching regex could hide an embedded control.
+    return any(token in value for token in _NATIVE_CONTROLS)
 
 
 class MarkupError(ValueError):

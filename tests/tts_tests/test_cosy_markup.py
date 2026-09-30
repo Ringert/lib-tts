@@ -179,3 +179,11 @@ def test_escaped_literal_text_is_not_confused_with_native_controls():
     )
     with pytest.raises(MarkupError):
         parse("[breath]", "[bre<emphasis>ath</emphasis>]")
+
+
+@pytest.mark.parametrize("text", ["[prefix[breath]]", "<prefix<strong>>"])
+def test_native_controls_cannot_hide_inside_literal_delimiters(text):
+    from html import escape
+
+    with pytest.raises(MarkupError):
+        parse(text, escape(text))
