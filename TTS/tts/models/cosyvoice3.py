@@ -2,11 +2,15 @@
 
 import logging
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 import numpy as np
 
+from .cosy_decoding import MarkupDecoder
+from .cosy_markup import STYLE_PROMPTS, Pause, SpeechPlan, parse_style
 from .shared.audio import SynthesisAudio
 
 
@@ -80,12 +84,71 @@ class CosyVoice3TTS:
             config.model_name, load_trt=False, load_vllm=False, fp16=False
         )
         _preserve_cached_attention(self.model.model.llm.llm)
+        self._synthesis_lock = RLock()
+        self._markup_decoder = MarkupDecoder(self.model.model.llm)
 
     def synthesize_audio(
         self, text, speaker_wav=None, ref_text=None, style_prompt=None, speed=1.0
     ):
+        with self._synthesis_lock:
+            return self._synthesize_audio_locked(
+                text, speaker_wav, ref_text, style_prompt, speed
+            )
+
+    def _synthesize_audio_locked(
+        self, text, speaker_wav, ref_text, style_prompt, speed
+    ):
+        plan = parse_style(text, style_prompt)
         if not speaker_wav:
             raise ValueError("CosyVoice3 requires reference audio")
+        if isinstance(plan, SpeechPlan):
+            return self._synthesize_plan(plan, speaker_wav, speed)
+        return self._synthesize_segment(text, speaker_wav, ref_text, plan, speed)
+
+    def _synthesize_plan(self, plan, speaker_wav, speed):
+        pieces = []
+        rate = None
+        # Synthesize before assembly so pauses use the actual returned rate.
+        for segment in plan.segments:
+            if isinstance(segment, Pause):
+                pieces.append(segment)
+                continue
+            audio = self._synthesize_segment(
+                segment.text,
+                speaker_wav,
+                None,
+                STYLE_PROMPTS[segment.style],
+                speed,
+                markup=True,
+            )
+            if rate is not None and rate != audio.sample_rate:
+                raise ValueError("Inconsistent segment sample rates")
+            rate = audio.sample_rate
+            wave = audio.waveform.copy()
+            ramp = min(round(rate * 0.005), len(wave) // 2)
+            if ramp:
+                gain = np.linspace(0.0, 1.0, ramp, dtype=np.float32)
+                wave[:ramp] *= gain
+                wave[-ramp:] *= gain[::-1]
+            pieces.append(wave)
+        waveforms = [
+            np.zeros(round(rate * piece.ms / 1000), dtype=np.float32)
+            if isinstance(piece, Pause)
+            else piece
+            for piece in pieces
+        ]
+        return SynthesisAudio(np.concatenate(waveforms), rate)
+
+    def _synthesize_segment(
+        self, text, speaker_wav, ref_text, style_prompt, speed, *, markup=False
+    ):
+        context = self._markup_decoder.segment() if markup else nullcontext()
+        with context:
+            return self._generate_audio(
+                text, speaker_wav, ref_text, style_prompt, speed
+            )
+
+    def _generate_audio(self, text, speaker_wav, ref_text, style_prompt, speed):
         options = {
             "tts_text": text,
             "prompt_wav": speaker_wav,

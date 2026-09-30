@@ -20,6 +20,8 @@ def test_metadata_and_factory_imports_are_model_free():
             """
 import sys
 from TTS.tts.models.tts_factory import TTSModelFactory
+from TTS.tts.models.cosy_markup import parse_style
+from TTS.tts.models.cosy_decoding import SegmentTokenLimitError
 from TTS.tts.models.shared.capabilities import capabilities
 assert TTSModelFactory.get_model_type("FunAudioLLM/Fun-CosyVoice3-0.5B-2512") == "cosyvoice3"
 assert TTSModelFactory.get_model_type("historical") == "xtts"
@@ -47,7 +49,10 @@ def test_cosy_prompt_path_speed_chunks_and_actual_rate(monkeypatch, style):
         inference_zero_shot=generate,
         inference_instruct2=generate,
         model=SimpleNamespace(
-            llm=SimpleNamespace(llm=SimpleNamespace(forward_one_step=lambda *args: None))
+            llm=SimpleNamespace(
+                llm=SimpleNamespace(forward_one_step=lambda *args: None),
+                inference_wrapper=lambda *args: iter(()),
+            )
         ),
     )
 
