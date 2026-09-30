@@ -16,6 +16,7 @@ class TTSModelFactory:
     """Factory for creating and managing TTS models."""
 
     SUPPORTED_MODELS = {
+        "cosyvoice3": {"description": "CosyVoice3 reference and instruction synthesis", "use_api": False},
         "xtts": {
             "class": None,  # Loaded dynamically via TTS.api
             "config_class": None,
@@ -41,6 +42,8 @@ class TTSModelFactory:
         Returns:
             Model type string ("xtts", "qwen3", etc.)
         """
+        if "cosyvoice" in model_name.lower():
+            return "cosyvoice3"
         if "xtts" in model_name.lower():
             return "xtts"
         elif "qwen" in model_name.lower():
@@ -97,13 +100,18 @@ class TTSModelFactory:
                 model_class = Qwen3TTS
                 if config is None:
                     config = Qwen3TTSConfig()
+            elif model_type == "cosyvoice3":
+                from TTS.tts.models.cosyvoice3 import CosyVoice3TTS, CosyVoice3Config
+                model_class = CosyVoice3TTS
+                if config is None:
+                    config = CosyVoice3Config()
             else:
                 raise ValueError(f"Unknown model type: {model_type}")
 
             model = model_class(config=config, **kwargs)
             return model
         except Exception as e:
-            logger.error(f"Failed to create {model_type} model: {e}")
+            logger.error("Failed to create %s model (%s)", model_type, type(e).__name__)
             raise
 
     @classmethod
@@ -115,7 +123,7 @@ class TTSModelFactory:
         }
 
     @classmethod
-    def get_config_for_model(cls, model_name: str, device: str = "cpu"):
+    def get_config_for_model(cls, model_name: str, device: str = "cpu") -> Any:
         """Get default config for model type.
         
         Args:
@@ -129,6 +137,9 @@ class TTSModelFactory:
         # Load config class dynamically
         if model_type == "xtts":
             return None  # XTTS uses TTS API wrapper
+        elif model_type == "cosyvoice3":
+            from TTS.tts.models.cosyvoice3 import CosyVoice3Config
+            return CosyVoice3Config(device_map=device)
         elif model_type == "qwen3":
             from TTS.tts.models.qwen3_tts import Qwen3TTSConfig
             config = Qwen3TTSConfig()

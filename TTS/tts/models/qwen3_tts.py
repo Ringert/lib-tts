@@ -13,6 +13,7 @@ import torch
 from coqpit import Coqpit
 
 from TTS.tts.models.base_tts import BaseTTS
+from TTS.tts.models.shared.audio import SynthesisAudio
 
 
 class Qwen3TTSConfig(Coqpit):
@@ -209,7 +210,7 @@ class Qwen3TTS(BaseTTS):
         except Exception as e:
             raise RuntimeError(f"Voice clone generation failed: {e}") from e
 
-    def synthesize(
+    def synthesize_audio(
         self,
         text: str,
         speaker_wav: Optional[str] = None,
@@ -217,7 +218,7 @@ class Qwen3TTS(BaseTTS):
         language: str = "English",
         speed: float = 1.0,
         **kwargs
-    ) -> np.ndarray:
+    ) -> SynthesisAudio:
         """
         Synthesize speech from text with optional voice cloning.
         
@@ -230,7 +231,7 @@ class Qwen3TTS(BaseTTS):
             **kwargs: Additional generation parameters
         
         Returns:
-            Waveform as numpy array
+            Waveform and the actual backend sample rate
         """
         if not speaker_wav:
             raise ValueError("Qwen3-TTS requires speaker_wav for voice cloning")
@@ -238,7 +239,7 @@ class Qwen3TTS(BaseTTS):
         if not ref_text:
             raise ValueError("ref_text (transcript of speaker_wav) is required for voice cloning")
 
-        wav, _ = self.inference(
+        wav, sample_rate = self.inference(
             text=text,
             ref_audio=speaker_wav,
             ref_text=ref_text,
@@ -250,7 +251,11 @@ class Qwen3TTS(BaseTTS):
         if speed != 1.0:
             wav = self._apply_speed(wav, speed)
 
-        return wav
+        return SynthesisAudio(wav, sample_rate)
+
+    def synthesize(self, *args, **kwargs) -> np.ndarray:
+        """Compatibility waveform interface over the shared audio contract."""
+        return self.synthesize_audio(*args, **kwargs).waveform
 
     def tts(
         self,
