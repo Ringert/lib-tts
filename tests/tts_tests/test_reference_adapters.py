@@ -43,7 +43,12 @@ def test_cosy_prompt_path_speed_chunks_and_actual_rate(monkeypatch, style):
         yield {"tts_speech": torch.tensor([[0.3]])}
 
     backend = SimpleNamespace(
-        sample_rate=22050, inference_zero_shot=generate, inference_instruct2=generate
+        sample_rate=22050,
+        inference_zero_shot=generate,
+        inference_instruct2=generate,
+        model=SimpleNamespace(
+            llm=SimpleNamespace(llm=SimpleNamespace(forward_one_step=lambda *args: None))
+        ),
     )
 
     def create(path, **kwargs):
