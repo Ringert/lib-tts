@@ -44,6 +44,26 @@ def _backend_class():
     return backend.CosyVoice3
 
 
+def _preserve_cached_attention(encoder):
+    """Adapt only this encoder to Transformers' full key-length mask contract."""
+    forward_one_step = encoder.forward_one_step
+
+    def forward_with_cache(xs, masks, cache=None):
+        # Pinned CosyVoice supplies only the current query's triangular mask.
+        # Transformers 4.57 pads absent cached positions as masked-out keys.
+        # Already complete masks (including their padding) must stay untouched.
+        if cache is not None and masks.shape[-1] == xs.shape[1]:
+            import torch
+
+            past_length = cache.get_seq_length()
+            masks = torch.cat(
+                (masks.new_ones((*masks.shape[:-1], past_length)), masks), dim=-1
+            )
+        return forward_one_step(xs, masks, cache)
+
+    encoder.forward_one_step = forward_with_cache
+
+
 class CosyVoice3TTS:
     def __init__(self, config: CosyVoice3Config):
         if config.device_map != "cpu":
@@ -59,6 +79,7 @@ class CosyVoice3TTS:
         self.model = _backend_class()(
             config.model_name, load_trt=False, load_vllm=False, fp16=False
         )
+        _preserve_cached_attention(self.model.model.llm.llm)
 
     def synthesize_audio(
         self, text, speaker_wav=None, ref_text=None, style_prompt=None, speed=1.0
