@@ -21,6 +21,8 @@ def test_metadata_and_factory_imports_are_model_free():
 import sys
 from TTS.tts.models.tts_factory import TTSModelFactory
 from TTS.tts.models.cosy_markup import parse_style
+from TTS.tts.models.cosy_language import normalize_language
+assert normalize_language(None) == "de"
 from TTS.tts.models.cosy_decoding import SegmentTokenLimitError
 from TTS.tts.models.shared.capabilities import capabilities
 assert TTSModelFactory.get_model_type("FunAudioLLM/Fun-CosyVoice3-0.5B-2512") == "cosyvoice3"
@@ -80,11 +82,11 @@ def test_cosy_prompt_path_speed_chunks_and_actual_rate(monkeypatch, style):
     }
     if style:
         expected["instruct_text"] = (
-            "You are a helpful assistant. Speak calmly.<|endofprompt|>"
+            "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache. Speak calmly.<|endofprompt|>"
         )
     else:
         expected["prompt_text"] = (
-            "You are a helpful assistant.<|endofprompt|>spoken reference"
+            "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache.<|endofprompt|>spoken reference"
         )
     assert calls == [expected]
     np.testing.assert_allclose(
@@ -159,3 +161,71 @@ def test_official_cosy_methods_do_not_log_private_prompts(caplog):
             )
         )
     assert "private-" not in caplog.text
+
+
+def test_cosy_language_reaches_every_path_without_state_leak():
+    from contextlib import nullcontext
+    from threading import RLock
+
+    calls = []
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        yield {"tts_speech": torch.zeros(1, 100)}
+
+    model = object.__new__(CosyVoice3TTS)
+    model._synthesis_lock = RLock()
+    model._markup_decoder = SimpleNamespace(segment=nullcontext)
+    model.model = SimpleNamespace(
+        sample_rate=24000, inference_zero_shot=generate, inference_instruct2=generate
+    )
+    model.synthesize_audio(
+        "target", "ref.wav", "verbatim reference", language=" English "
+    )
+    assert (
+        calls[-1]["prompt_text"]
+        == "You are a helpful assistant. Speak in English.<|endofprompt|>verbatim reference"
+    )
+    model.synthesize_audio(
+        "target", "ref.wav", style_prompt="Speak English softly.", language=" Deutsch "
+    )
+    assert (
+        calls[-1]["instruct_text"]
+        == "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache. Speak English softly.<|endofprompt|>"
+    )
+    model.synthesize_audio(
+        "One two.",
+        "ref.wav",
+        style_prompt='markup:v1:<speech>One<pause ms="180"/> two.</speech>',
+        language="fr",
+    )
+    assert all(
+        c["instruct_text"].startswith("You are a helpful assistant. Speak in French.")
+        for c in calls[-2:]
+    )
+    assert [c["tts_text"] for c in calls] == ["target", "target", "One", " two."]
+    model.synthesize_audio("target", "ref.wav", "verbatim reference")
+    assert (
+        calls[-1]["prompt_text"]
+        == "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache.<|endofprompt|>verbatim reference"
+    )
+    assert "instruct_text" not in calls[-1]
+
+
+@pytest.mark.parametrize(
+    "language,error",
+    [
+        ("auto", "UnsupportedLanguageError"),
+        ("pt", "UnsupportedLanguageError"),
+        ("de-DE", "UnsupportedLanguageError"),
+        (True, "InvalidLanguageTypeError"),
+    ],
+)
+def test_direct_cosy_rejects_language_before_backend(language, error):
+    from threading import RLock
+
+    model = object.__new__(CosyVoice3TTS)
+    model._synthesis_lock = RLock()
+    with pytest.raises(ValueError) as err:
+        model.synthesize_audio("target", "ref.wav", "reference", language=language)
+    assert type(err.value).__name__ == error

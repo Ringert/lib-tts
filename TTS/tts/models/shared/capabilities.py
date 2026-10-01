@@ -29,6 +29,8 @@ def capabilities(modus: str, style_prompt: str | None = None) -> Capabilities:
         return Capabilities(SAMPLING_OPTIONS | {"language", "speed"}, True)
     if modus == "COSY":
         return Capabilities(
-            frozenset({"speed", "style_prompt"}), not bool(style_prompt), 30.0
+            frozenset({"language", "speed", "style_prompt"}),
+            not bool(style_prompt),
+            30.0,
         )
     raise ValueError("Unsupported synthesis mode")

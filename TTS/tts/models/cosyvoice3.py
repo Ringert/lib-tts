@@ -10,6 +10,7 @@ from threading import RLock
 import numpy as np
 
 from .cosy_decoding import MarkupDecoder
+from .cosy_language import instruction_prompt, normalize_language
 from .cosy_markup import STYLE_PROMPTS, Pause, SpeechPlan, parse_style
 from .shared.audio import SynthesisAudio
 
@@ -88,24 +89,37 @@ class CosyVoice3TTS:
         self._markup_decoder = MarkupDecoder(self.model.model.llm)
 
     def synthesize_audio(
-        self, text, speaker_wav=None, ref_text=None, style_prompt=None, speed=1.0
+        self,
+        text,
+        speaker_wav=None,
+        ref_text=None,
+        style_prompt=None,
+        speed=1.0,
+        language=None,
     ):
         with self._synthesis_lock:
             return self._synthesize_audio_locked(
-                text, speaker_wav, ref_text, style_prompt, speed
+                text,
+                speaker_wav,
+                ref_text,
+                style_prompt,
+                speed,
+                normalize_language(language),
             )
 
     def _synthesize_audio_locked(
-        self, text, speaker_wav, ref_text, style_prompt, speed
+        self, text, speaker_wav, ref_text, style_prompt, speed, language
     ):
         plan = parse_style(text, style_prompt)
         if not speaker_wav:
             raise ValueError("CosyVoice3 requires reference audio")
         if isinstance(plan, SpeechPlan):
-            return self._synthesize_plan(plan, speaker_wav, speed)
-        return self._synthesize_segment(text, speaker_wav, ref_text, plan, speed)
+            return self._synthesize_plan(plan, speaker_wav, speed, language)
+        return self._synthesize_segment(
+            text, speaker_wav, ref_text, plan, speed, language
+        )
 
-    def _synthesize_plan(self, plan, speaker_wav, speed):
+    def _synthesize_plan(self, plan, speaker_wav, speed, language):
         pieces = []
         rate = None
         # Synthesize before assembly so pauses use the actual returned rate.
@@ -119,6 +133,7 @@ class CosyVoice3TTS:
                 None,
                 STYLE_PROMPTS[segment.style],
                 speed,
+                language,
                 markup=True,
             )
             if rate is not None and rate != audio.sample_rate:
@@ -140,15 +155,25 @@ class CosyVoice3TTS:
         return SynthesisAudio(np.concatenate(waveforms), rate)
 
     def _synthesize_segment(
-        self, text, speaker_wav, ref_text, style_prompt, speed, *, markup=False
+        self,
+        text,
+        speaker_wav,
+        ref_text,
+        style_prompt,
+        speed,
+        language,
+        *,
+        markup=False,
     ):
         context = self._markup_decoder.segment() if markup else nullcontext()
         with context:
             return self._generate_audio(
-                text, speaker_wav, ref_text, style_prompt, speed
+                text, speaker_wav, ref_text, style_prompt, speed, language
             )
 
-    def _generate_audio(self, text, speaker_wav, ref_text, style_prompt, speed):
+    def _generate_audio(
+        self, text, speaker_wav, ref_text, style_prompt, speed, language
+    ):
         options = {
             "tts_text": text,
             "prompt_wav": speaker_wav,
@@ -158,9 +183,7 @@ class CosyVoice3TTS:
         }
         if style_prompt:
             chunks = self.model.inference_instruct2(
-                instruct_text="You are a helpful assistant. "
-                + style_prompt
-                + "<|endofprompt|>",
+                instruct_text=instruction_prompt(language, style_prompt),
                 **options,
             )
         else:
@@ -169,7 +192,7 @@ class CosyVoice3TTS:
                     "Reference text is required without a style instruction"
                 )
             chunks = self.model.inference_zero_shot(
-                prompt_text="You are a helpful assistant.<|endofprompt|>" + ref_text,
+                prompt_text=instruction_prompt(language) + ref_text,
                 **options,
             )
         waveforms = [
