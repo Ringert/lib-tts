@@ -114,12 +114,12 @@ class CosyVoice3TTS:
         if not speaker_wav:
             raise ValueError("CosyVoice3 requires reference audio")
         if isinstance(plan, SpeechPlan):
-            return self._synthesize_plan(plan, speaker_wav, speed, language)
+            return self._synthesize_plan(plan, speaker_wav, ref_text, speed, language)
         return self._synthesize_segment(
             text, speaker_wav, ref_text, plan, speed, language
         )
 
-    def _synthesize_plan(self, plan, speaker_wav, speed, language):
+    def _synthesize_plan(self, plan, speaker_wav, ref_text, speed, language):
         pieces = []
         rate = None
         # Synthesize before assembly so pauses use the actual returned rate.
@@ -130,7 +130,7 @@ class CosyVoice3TTS:
             audio = self._synthesize_segment(
                 segment.text,
                 speaker_wav,
-                None,
+                ref_text,
                 STYLE_PROMPTS[segment.style],
                 speed,
                 language,
@@ -181,20 +181,18 @@ class CosyVoice3TTS:
             "speed": speed,
             "text_frontend": False,
         }
-        if style_prompt:
+        if isinstance(ref_text, str) and ref_text.strip():
+            chunks = self.model.inference_zero_shot(
+                prompt_text=instruction_prompt(language, style_prompt) + ref_text,
+                **options,
+            )
+        elif style_prompt:
             chunks = self.model.inference_instruct2(
                 instruct_text=instruction_prompt(language, style_prompt),
                 **options,
             )
         else:
-            if not isinstance(ref_text, str) or not ref_text.strip():
-                raise ValueError(
-                    "Reference text is required without a style instruction"
-                )
-            chunks = self.model.inference_zero_shot(
-                prompt_text=instruction_prompt(language) + ref_text,
-                **options,
-            )
+            raise ValueError("Reference text is required without a style instruction")
         waveforms = [
             chunk["tts_speech"].detach().cpu().numpy().reshape(-1) for chunk in chunks
         ]

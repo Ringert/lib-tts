@@ -81,8 +81,8 @@ def test_cosy_prompt_path_speed_chunks_and_actual_rate(monkeypatch, style):
         "text_frontend": False,
     }
     if style:
-        expected["instruct_text"] = (
-            "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache. Speak calmly.<|endofprompt|>"
+        expected["prompt_text"] = (
+            "You are a helpful assistant. Sprich auf Deutsch mit standarddeutscher Aussprache. Speak calmly.<|endofprompt|>spoken reference"
         )
     else:
         expected["prompt_text"] = (
@@ -229,3 +229,72 @@ def test_direct_cosy_rejects_language_before_backend(language, error):
     with pytest.raises(ValueError) as err:
         model.synthesize_audio("target", "ref.wav", "reference", language=language)
     assert type(err.value).__name__ == error
+
+
+def test_cosy_style_and_markup_keep_llm_reference_tokens_through_real_frontend():
+    from contextlib import nullcontext
+    from threading import RLock
+
+    from TTS.tts.models.cosyvoice3 import _backend_class
+
+    backend = object.__new__(_backend_class())
+    from cosyvoice.cli.frontend import CosyVoiceFrontEnd
+
+    frontend = object.__new__(CosyVoiceFrontEnd)
+    texts, consumed = [], []
+
+    def text_tokens(text):
+        texts.append(text)
+        return torch.tensor([[1, 2, 3]]), torch.tensor([3])
+
+    frontend._extract_text_token = text_tokens
+    frontend._extract_speech_feat = lambda path: (
+        torch.ones(1, 8, 80),
+        torch.tensor([8]),
+    )
+    frontend._extract_speech_token = lambda path: (
+        torch.tensor([[10, 11, 12, 13]]),
+        torch.tensor([4]),
+    )
+    frontend._extract_spk_embedding = lambda path: torch.ones(1, 192)
+    backend.frontend = frontend
+    backend.sample_rate = 24000
+
+    def tts(**kwargs):
+        consumed.append(kwargs)
+        yield {"tts_speech": torch.ones(1, 100)}
+
+    backend.model = SimpleNamespace(tts=tts)
+    adapter = object.__new__(CosyVoice3TTS)
+    adapter._synthesis_lock = RLock()
+    adapter._markup_decoder = SimpleNamespace(segment=nullcontext)
+    adapter.model = backend
+    for style in [
+        "Speak softly.",
+        'markup:v1:<speech>One<pause ms="100"/> two.</speech>',
+    ]:
+        adapter.synthesize_audio(
+            "One two.", "same.wav", "Verbatim reference.", style_prompt=style
+        )
+    assert len(consumed) == 3
+    for inputs in consumed:
+        assert inputs["llm_prompt_speech_token"].tolist() == [[10, 11, 12, 13]]
+        assert inputs["flow_prompt_speech_token"].tolist() == [[10, 11, 12, 13]]
+        assert inputs["prompt_speech_feat"].shape == (1, 8, 80)
+        assert inputs["flow_embedding"].shape == (1, 192)
+    prompts = texts[1::2]
+    assert all(
+        prompt.split("<|endofprompt|>")[-1] == "Verbatim reference."
+        for prompt in prompts
+    )
+    assert "Speak softly." in prompts[0].split("<|endofprompt|>")[0]
+    assert texts[::2] == ["One two.", "One", " two."]
+    for unusable in [None, "", " ", {}, 3]:
+        adapter.synthesize_audio(
+            "One two.", "same.wav", unusable, style_prompt="Speak softly."
+        )
+        assert "llm_prompt_speech_token" not in consumed[-1]
+        assert consumed[-1]["flow_prompt_speech_token"].shape == (1, 4)
+    adapter.synthesize_audio("One two.", "same.wav", "Next reference.")
+    assert texts[-1].endswith("<|endofprompt|>Next reference.")
+    assert "Speak softly." not in texts[-1]
