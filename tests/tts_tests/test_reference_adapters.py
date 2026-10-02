@@ -292,6 +292,8 @@ def test_cosy_style_and_markup_keep_llm_reference_tokens_through_real_frontend()
     )
     assert "Speak softly." in prompts[0].split("<|endofprompt|>")[0]
     assert texts[::2] == ["One two.", "One", " two."]
+    assert all("calm, neutral" not in prompt for prompt in prompts[1:])
+    assert all("Sprich auf Deutsch" in prompt for prompt in prompts)
     for unusable in [None, "", " ", {}, 3]:
         adapter.synthesize_audio(
             "One two.", "same.wav", unusable, style_prompt="Speak softly."

@@ -54,6 +54,7 @@ class MarkupError(ValueError):
 class Speech:
     text: str
     style: str
+    explicit_style: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,14 +88,14 @@ def parse_style(text: str, style: str | None) -> SpeechPlan | str | None:
     pauses = 0
     pause_ms = 0
 
-    def add_text(value, style_name, emphasis):
+    def add_text(value, style_name, emphasis, explicit):
         if value:
             # Native control tokens must only originate in this planner.
             if _has_native_controls(value):
                 raise MarkupError("Native backend controls are unsupported.")
-            leaves.append((value, style_name, emphasis))
+            leaves.append((value, style_name, emphasis, explicit))
 
-    def walk(node, name="neutral", emphasis=False, depth=1):
+    def walk(node, name="neutral", emphasis=False, depth=1, explicit=False):
         nonlocal elements, pauses, pause_ms
         elements += 1
         if depth > 8 or elements > 64:
@@ -103,6 +104,7 @@ def parse_style(text: str, style: str | None) -> SpeechPlan | str | None:
             if set(node.attrib) != {"name"} or node.get("name") not in STYLE_PROMPTS:
                 raise MarkupError("Unsupported style or attributes.")
             name = node.get("name")
+            explicit = True
         elif node.tag == "pause":
             value = node.get("ms", "")
             if set(node.attrib) != {"ms"} or not re.fullmatch(r"[0-9]+", value):
@@ -126,10 +128,10 @@ def parse_style(text: str, style: str | None) -> SpeechPlan | str | None:
             raise MarkupError("Unsupported speech element.")
         if node.tag in {"style", "emphasis"} and not "".join(node.itertext()).strip():
             raise MarkupError("Speech ranges must contain text.")
-        add_text(node.text, name, emphasis)
+        add_text(node.text, name, emphasis, explicit)
         for child in node:
-            walk(child, name, emphasis, depth + 1)
-            add_text(child.tail, name, emphasis)
+            walk(child, name, emphasis, depth + 1, explicit)
+            add_text(child.tail, name, emphasis, explicit)
 
     walk(root)
     plain = "".join(item[0] for item in leaves if not isinstance(item, Pause))
@@ -141,16 +143,18 @@ def parse_style(text: str, style: str | None) -> SpeechPlan | str | None:
     current_name = None
     current = []
     current_emphasis = False
+    current_explicit = False
     offset = 0
 
     def flush():
-        nonlocal current, current_emphasis
+        nonlocal current, current_emphasis, current_explicit
         if current:
             if current_emphasis:
                 current.append("</strong>")
-            segments.append(Speech("".join(current), current_name))
+            segments.append(Speech("".join(current), current_name, current_explicit))
         current = []
         current_emphasis = False
+        current_explicit = False
 
     def word_character(char):
         return unicodedata.category(char)[0] in "LMN" or char in "_'’‐-"
@@ -170,11 +174,13 @@ def parse_style(text: str, style: str | None) -> SpeechPlan | str | None:
             segments.append(item)
             current_name = None
             continue
-        value, name, emphasis = item
+        value, name, emphasis, explicit = item
         if current_name is not None and name != current_name:
             boundary()
             flush()
         current_name = name
+        # Preserve existing merges, including same-style markup inside a word.
+        current_explicit = current_explicit or explicit
         if emphasis != current_emphasis:
             current.append("<strong>" if emphasis else "</strong>")
             current_emphasis = emphasis

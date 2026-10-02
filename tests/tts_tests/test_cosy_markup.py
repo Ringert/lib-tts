@@ -28,9 +28,9 @@ def test_nested_styles_restore_and_emphasis_is_idempotent_without_split():
     assert result == SpeechPlan(
         (
             Speech("One ", "neutral"),
-            Speech("two ", "soft"),
-            Speech("three", "loud"),
-            Speech(" four", "soft"),
+            Speech("two ", "soft", True),
+            Speech("three", "loud", True),
+            Speech(" four", "soft", True),
             Speech(" <strong>five</strong>.", "neutral"),
         )
     )
@@ -187,3 +187,51 @@ def test_native_controls_cannot_hide_inside_literal_delimiters(text):
 
     with pytest.raises(MarkupError):
         parse(text, escape(text))
+
+
+def test_neutral_provenance_merges_without_new_word_boundaries():
+    assert parse("Hello.", 'He<style name="neutral">ll</style>o.') == SpeechPlan(
+        (Speech("Hello.", "neutral", True),)
+    )
+    result = parse(
+        "One two three four five.",
+        'One <style name="neutral"><emphasis>two</emphasis> <style name="soft">three</style> four</style> five.',
+    )
+    assert result == SpeechPlan(
+        (
+            Speech("One <strong>two</strong> ", "neutral", True),
+            Speech("three", "soft", True),
+            Speech(" four five.", "neutral", True),
+        )
+    )
+    result = parse("One two three.", 'One <style name="soft">two</style> three.')
+    assert [s.explicit_style for s in result.segments] == [False, True, False]
+
+
+@pytest.mark.parametrize("reference", ["reference", None, "", " ", {}])
+def test_only_implicit_neutral_with_reference_omits_instruction(reference):
+    calls = []
+
+    def inference(**kwargs):
+        calls.append(kwargs)
+        yield {"tts_speech": torch.ones(1, 100)}
+
+    model = object.__new__(CosyVoice3TTS)
+    model._synthesis_lock = RLock()
+    model._markup_decoder = SimpleNamespace(segment=nullcontext)
+    model.model = SimpleNamespace(
+        sample_rate=1000, inference_instruct2=inference, inference_zero_shot=inference
+    )
+    result = model.synthesize_audio(
+        "One two three.",
+        "same.wav",
+        reference,
+        style_prompt='markup:v1:<speech><emphasis>One</emphasis><pause ms="180"/> <style name="neutral">two</style><pause ms="180"/> three.</speech>',
+    )
+    key = "prompt_text" if reference == "reference" else "instruct_text"
+    assert [("calm, neutral" in c[key]) for c in calls] == (
+        [False, True, False] if reference == "reference" else [True, True, True]
+    )
+    assert [c["tts_text"] for c in calls] == ["<strong>One</strong>", " two", " three."]
+    assert len(result.waveform) == 660
+    np.testing.assert_array_equal(result.waveform[100:280], 0)

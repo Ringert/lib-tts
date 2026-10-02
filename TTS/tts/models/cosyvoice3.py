@@ -128,11 +128,19 @@ class CosyVoice3TTS:
             if isinstance(segment, Pause):
                 pieces.append(segment)
                 continue
+            instruction = STYLE_PROMPTS[segment.style]
+            if (
+                segment.style == "neutral"
+                and not segment.explicit_style
+                and isinstance(ref_text, str)
+                and ref_text.strip()
+            ):
+                instruction = None
             audio = self._synthesize_segment(
                 segment.text,
                 speaker_wav,
                 ref_text,
-                STYLE_PROMPTS[segment.style],
+                instruction,
                 speed,
                 language,
                 markup=True,
