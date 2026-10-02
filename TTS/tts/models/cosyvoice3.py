@@ -2,11 +2,16 @@
 
 import logging
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 import numpy as np
 
+from .cosy_decoding import MarkupDecoder, preserve_minimum_tokens
+from .cosy_language import instruction_prompt, normalize_language
+from .cosy_markup import STYLE_PROMPTS, Pause, SpeechPlan, parse_style
 from .shared.audio import SynthesisAudio
 
 
@@ -80,12 +85,104 @@ class CosyVoice3TTS:
             config.model_name, load_trt=False, load_vllm=False, fp16=False
         )
         _preserve_cached_attention(self.model.model.llm.llm)
+        preserve_minimum_tokens(self.model.model.llm)
+        self._synthesis_lock = RLock()
+        self._markup_decoder = MarkupDecoder(self.model.model.llm)
 
     def synthesize_audio(
-        self, text, speaker_wav=None, ref_text=None, style_prompt=None, speed=1.0
+        self,
+        text,
+        speaker_wav=None,
+        ref_text=None,
+        style_prompt=None,
+        speed=1.0,
+        language=None,
     ):
+        with self._synthesis_lock:
+            return self._synthesize_audio_locked(
+                text,
+                speaker_wav,
+                ref_text,
+                style_prompt,
+                speed,
+                normalize_language(language),
+            )
+
+    def _synthesize_audio_locked(
+        self, text, speaker_wav, ref_text, style_prompt, speed, language
+    ):
+        plan = parse_style(text, style_prompt)
         if not speaker_wav:
             raise ValueError("CosyVoice3 requires reference audio")
+        if isinstance(plan, SpeechPlan):
+            return self._synthesize_plan(plan, speaker_wav, ref_text, speed, language)
+        return self._synthesize_segment(
+            text, speaker_wav, ref_text, plan, speed, language
+        )
+
+    def _synthesize_plan(self, plan, speaker_wav, ref_text, speed, language):
+        pieces = []
+        rate = None
+        # Synthesize before assembly so pauses use the actual returned rate.
+        for segment in plan.segments:
+            if isinstance(segment, Pause):
+                pieces.append(segment)
+                continue
+            instruction = STYLE_PROMPTS[segment.style]
+            if (
+                segment.style == "neutral"
+                and not segment.explicit_style
+                and isinstance(ref_text, str)
+                and ref_text.strip()
+            ):
+                instruction = None
+            audio = self._synthesize_segment(
+                segment.text,
+                speaker_wav,
+                ref_text,
+                instruction,
+                speed,
+                language,
+                markup=True,
+            )
+            if rate is not None and rate != audio.sample_rate:
+                raise ValueError("Inconsistent segment sample rates")
+            rate = audio.sample_rate
+            wave = audio.waveform.copy()
+            ramp = min(round(rate * 0.005), len(wave) // 2)
+            if ramp:
+                gain = np.linspace(0.0, 1.0, ramp, dtype=np.float32)
+                wave[:ramp] *= gain
+                wave[-ramp:] *= gain[::-1]
+            pieces.append(wave)
+        waveforms = [
+            np.zeros(round(rate * piece.ms / 1000), dtype=np.float32)
+            if isinstance(piece, Pause)
+            else piece
+            for piece in pieces
+        ]
+        return SynthesisAudio(np.concatenate(waveforms), rate)
+
+    def _synthesize_segment(
+        self,
+        text,
+        speaker_wav,
+        ref_text,
+        style_prompt,
+        speed,
+        language,
+        *,
+        markup=False,
+    ):
+        context = self._markup_decoder.segment() if markup else nullcontext()
+        with context:
+            return self._generate_audio(
+                text, speaker_wav, ref_text, style_prompt, speed, language
+            )
+
+    def _generate_audio(
+        self, text, speaker_wav, ref_text, style_prompt, speed, language
+    ):
         options = {
             "tts_text": text,
             "prompt_wav": speaker_wav,
@@ -93,22 +190,18 @@ class CosyVoice3TTS:
             "speed": speed,
             "text_frontend": False,
         }
-        if style_prompt:
+        if isinstance(ref_text, str) and ref_text.strip():
+            chunks = self.model.inference_zero_shot(
+                prompt_text=instruction_prompt(language, style_prompt) + ref_text,
+                **options,
+            )
+        elif style_prompt:
             chunks = self.model.inference_instruct2(
-                instruct_text="You are a helpful assistant. "
-                + style_prompt
-                + "<|endofprompt|>",
+                instruct_text=instruction_prompt(language, style_prompt),
                 **options,
             )
         else:
-            if not isinstance(ref_text, str) or not ref_text.strip():
-                raise ValueError(
-                    "Reference text is required without a style instruction"
-                )
-            chunks = self.model.inference_zero_shot(
-                prompt_text="You are a helpful assistant.<|endofprompt|>" + ref_text,
-                **options,
-            )
+            raise ValueError("Reference text is required without a style instruction")
         waveforms = [
             chunk["tts_speech"].detach().cpu().numpy().reshape(-1) for chunk in chunks
         ]
