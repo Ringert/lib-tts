@@ -52,6 +52,9 @@ def test_cosy_prompt_path_speed_chunks_and_actual_rate(monkeypatch, style):
         inference_instruct2=generate,
         model=SimpleNamespace(
             llm=SimpleNamespace(
+                stop_token_ids=[3, 4],
+                llm_decoder=SimpleNamespace(out_features=5),
+                sampling_ids=lambda *args: 0,
                 llm=SimpleNamespace(forward_one_step=lambda *args: None),
                 inference_wrapper=lambda *args: iter(()),
             )

@@ -4,6 +4,31 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 
+def preserve_minimum_tokens(llm):
+    """Mask CV3's complete stop set before its existing sampling decision.
+
+    The pinned inherited sampler masks only speech_token_size (CV3's SOS).
+    Keep the correction local to this model and preserve the original RAS path.
+    """
+    stop_ids = tuple(llm.stop_token_ids)
+    width = llm.llm_decoder.out_features
+    if not stop_ids or any(
+        type(token) is not int or not 0 <= token < width for token in stop_ids
+    ):
+        raise ValueError("Invalid CosyVoice stop-token configuration")
+    original = llm.sampling_ids
+
+    def sampling_ids(weighted_scores, decoded_tokens, sampling, ignore_eos=True):
+        if ignore_eos:
+            if weighted_scores.ndim != 1 or weighted_scores.shape[0] != width:
+                raise ValueError("Unexpected CosyVoice sampling score shape")
+            weighted_scores = weighted_scores.clone()
+            weighted_scores[list(stop_ids)] = -float("inf")
+        return original(weighted_scores, decoded_tokens, sampling, ignore_eos)
+
+    llm.sampling_ids = sampling_ids
+
+
 class SegmentTokenLimitError(RuntimeError):
     """A markup segment did not finish normally within its token budget."""
 

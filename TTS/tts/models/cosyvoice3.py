@@ -9,7 +9,7 @@ from threading import RLock
 
 import numpy as np
 
-from .cosy_decoding import MarkupDecoder
+from .cosy_decoding import MarkupDecoder, preserve_minimum_tokens
 from .cosy_language import instruction_prompt, normalize_language
 from .cosy_markup import STYLE_PROMPTS, Pause, SpeechPlan, parse_style
 from .shared.audio import SynthesisAudio
@@ -85,6 +85,7 @@ class CosyVoice3TTS:
             config.model_name, load_trt=False, load_vllm=False, fp16=False
         )
         _preserve_cached_attention(self.model.model.llm.llm)
+        preserve_minimum_tokens(self.model.model.llm)
         self._synthesis_lock = RLock()
         self._markup_decoder = MarkupDecoder(self.model.model.llm)
 

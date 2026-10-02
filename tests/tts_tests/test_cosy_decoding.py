@@ -126,3 +126,89 @@ def test_adapter_serializes_direct_markup_and_free_text_calls():
         assert (
             first.result(timeout=2).sample_rate == second.result(timeout=2).sample_rate
         )
+
+
+def cv3_sampler(stop_offset=1):
+    """Real constructor, inherited sampler and CPU decoder, with tiny logits."""
+    from functools import partial
+
+    _backend_class()
+    from cosyvoice.llm.llm import CosyVoice3LM
+    from cosyvoice.utils.common import ras_sampling
+
+    model = CosyVoice3LM(2, 2, 3, torch.nn.Identity(), partial(ras_sampling, top_k=1))
+    model.llm.forward_one_step = lambda x, masks, cache: (x, None)
+    with torch.no_grad():
+        model.llm_decoder.weight.fill_(-100)
+        model.llm_decoder.weight[0].fill_(0)
+        model.llm_decoder.weight[3 + stop_offset].fill_(100)
+        model.speech_embedding.weight.fill_(1)
+    return model
+
+
+@pytest.mark.parametrize("stop_offset", [1, 7])
+def test_real_cv3_stop_mask_enforces_existing_minimum(stop_offset):
+    from TTS.tts.models.cosy_decoding import preserve_minimum_tokens
+
+    model = cv3_sampler(stop_offset)
+    inputs = torch.ones(1, 1, 2)
+    assert list(model.inference_wrapper(inputs, 25, 1, 5, "before")) == []
+    preserve_minimum_tokens(model)
+    assert list(model.inference_wrapper(inputs, 25, 1, 5, "after")) == [0]
+    assert list(model.inference_wrapper(inputs, 25, 0, 5, "zero")) == []
+
+
+def test_real_ras_fallback_mask_scores_rng_and_instance_isolation(monkeypatch):
+    from TTS.tts.models.cosy_decoding import preserve_minimum_tokens
+
+    model, other = cv3_sampler(), cv3_sampler()
+    from cosyvoice.utils import common
+
+    class_method = type(model).sampling_ids
+    original = model.sampling_ids
+    preserve_minimum_tokens(model)
+    scores = torch.full((203,), -100.0)
+    scores[0], scores[1], scores[4] = 10, 0, 100
+    untouched = scores.clone()
+    calls = []
+    fallback = common.random_sampling
+
+    def observe(values, history, sampling):
+        assert torch.isneginf(values[model.stop_token_ids]).all()
+        calls.append((history, sampling))
+        return fallback(values, history, sampling)
+
+    monkeypatch.setattr(common, "random_sampling", observe)
+    torch.manual_seed(31)
+    selected = model.sampling_ids(scores, [0], 25, True)
+    state = torch.get_rng_state()
+    assert selected == 1 and calls == [([0], 25)]
+    assert torch.equal(scores, untouched)
+    # Exactly the original sampler on pre-masked scores: no extra RNG draws.
+    expected = untouched.clone()
+    expected[model.stop_token_ids] = -float("inf")
+    torch.manual_seed(31)
+    assert original(expected, [0], 25, True) == selected
+    assert torch.equal(state, torch.get_rng_state())
+    assert model.sampling_ids(scores, [], 25, False) == model.eos_token
+    assert other.sampling_ids(scores.clone(), [], 25, True) == other.eos_token
+    assert type(model).sampling_ids is class_method
+
+
+@pytest.mark.parametrize("invalid", [[], [-1], [203], [True], [1.5]])
+def test_stop_configuration_is_not_silently_truncated(invalid):
+    from TTS.tts.models.cosy_decoding import preserve_minimum_tokens
+
+    model = cv3_sampler()
+    model.stop_token_ids = invalid
+    with pytest.raises(ValueError, match="configuration"):
+        preserve_minimum_tokens(model)
+
+
+def test_stop_mask_rejects_inconsistent_score_width():
+    from TTS.tts.models.cosy_decoding import preserve_minimum_tokens
+
+    model = cv3_sampler()
+    preserve_minimum_tokens(model)
+    with pytest.raises(ValueError, match="shape"):
+        model.sampling_ids(torch.zeros(4), [], 25)
