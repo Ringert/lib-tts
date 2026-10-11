@@ -34,7 +34,8 @@ def run(request):
             local_files_only=True,
         )
     except (OSError, ValueError) as exc:
-        raise ExperimentalError("model_unavailable") from exc
+        code = "resource_unavailable" if resource_error(exc) else "model_unavailable"
+        raise ExperimentalError(code) from exc
     reference_text = request["ref_text"]
     reference_ids = tts._tokenize_texts([tts._build_ref_text(reference_text)])[0]
     if reference_ids.numel() > 1024:
