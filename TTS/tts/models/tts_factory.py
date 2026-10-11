@@ -16,6 +16,8 @@ class TTSModelFactory:
     """Factory for creating and managing TTS models."""
 
     SUPPORTED_MODELS = {
+        "qwen_v2": {"description": "Experimental Qwen reference cloning", "use_api": False},
+        "qwen_trained": {"description": "Experimental Qwen head adaptation", "use_api": False},
         "xtts": {
             "class": None,  # Loaded dynamically via TTS.api
             "config_class": None,
@@ -41,6 +43,8 @@ class TTSModelFactory:
         Returns:
             Model type string ("xtts", "qwen3", etc.)
         """
+        if model_name.upper() in {"QWEN_V2", "QWEN_TRAINED"}:
+            return model_name.lower()
         if "xtts" in model_name.lower():
             return "xtts"
         elif "qwen" in model_name.lower():
@@ -91,6 +95,10 @@ class TTSModelFactory:
                     f"Model type '{model_type}' should be loaded via TTS API wrapper"
                 )
             
+            if model_type in {"qwen_v2", "qwen_trained"}:
+                from TTS.tts.models.qwen_experimental import ExperimentalQwenTTS
+                return ExperimentalQwenTTS(config or cls.get_config_for_model(model_name))
+
             # Load Qwen3-TTS dynamically
             if model_type == "qwen3":
                 from TTS.tts.models.qwen3_tts import Qwen3TTS, Qwen3TTSConfig
@@ -126,6 +134,10 @@ class TTSModelFactory:
         if model_type not in cls.SUPPORTED_MODELS:
             raise ValueError(f"Unknown model type: {model_type}")
         
+        if model_type in {"qwen_v2", "qwen_trained"}:
+            from TTS.tts.models.qwen_experimental import ExperimentalQwenConfig
+            return ExperimentalQwenConfig(device_map=device, trained=model_type == "qwen_trained")
+
         # Load config class dynamically
         if model_type == "xtts":
             return None  # XTTS uses TTS API wrapper
