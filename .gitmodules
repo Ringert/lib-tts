@@ -1,3 +1,0 @@
-[submodule "third_party/CosyVoice"]
-	path = third_party/CosyVoice
-	url = https://github.com/QwenAudio/CosyVoice.git
