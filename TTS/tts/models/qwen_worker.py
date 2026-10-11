@@ -1,4 +1,4 @@
-"""One private offline process: load, optionally adapt, generate, then exit."""
+"""Private offline V2 process and shared inference for stored trained versions."""
 
 import json
 import sys
@@ -14,11 +14,11 @@ def run(request):
     import torch
     from qwen_tts import Qwen3TTSModel
 
-    from TTS.tts.models.qwen_head_adaptation import adapt_heads, weight_digest
-
     torch.set_num_threads(4)
     torch.set_num_interop_threads(1)
     config = request["config"]
+    if config["trained"]:
+        raise ExperimentalError("trained_voice_required")
     audio, rate = sf.read(request["speaker_wav"], dtype="float32", always_2d=True)
     audio = audio.mean(axis=1)
     if not audio.size or not np.isfinite(audio).all() or len(audio) / rate > 30:
@@ -45,13 +45,17 @@ def run(request):
         ref_text=reference_text,
         x_vector_only_mode=False,
     )
-    report = {"mode": "QWEN_TRAINED" if config["trained"] else "QWEN_V2", "steps": 0}
-    if config["trained"]:
-        try:
-            report.update(adapt_heads(tts, prompt, reference_text))
-        except Exception as exc:
-            code = "resource_unavailable" if resource_error(exc) else "training_failed"
-            raise ExperimentalError(code) from exc
+    report = {"mode": "QWEN_V2", "steps": 0}
+    return generate(tts, prompt, request, report)
+
+
+def generate(tts, prompt, request, report):
+    import librosa
+    import numpy as np
+    import torch
+    from TTS.tts.models.qwen_head_adaptation import weight_digest
+
+    config = request["config"]
     options = request["options"].copy()
     style = options.pop("style_prompt", None)
     language = options.pop("language")
