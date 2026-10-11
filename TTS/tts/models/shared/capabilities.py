@@ -1,4 +1,4 @@
-"""The supported request options for the two reference synthesis backends."""
+"""The supported request options for the reference synthesis backend."""
 
 from dataclasses import dataclass
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 class Capabilities:
     options: frozenset[str]
     requires_reference_text: bool
-    max_reference_seconds: float | None = None
 
 
 SAMPLING_OPTIONS = frozenset({"top_p", "top_k", "temperature", "repetition_penalty"})
@@ -27,8 +26,4 @@ MODEL_OPTIONS = SAMPLING_OPTIONS | {
 def capabilities(modus: str, style_prompt: str | None = None) -> Capabilities:
     if modus == "QWEN":
         return Capabilities(SAMPLING_OPTIONS | {"language", "speed"}, True)
-    if modus == "COSY":
-        return Capabilities(
-            frozenset({"speed", "style_prompt"}), not bool(style_prompt), 30.0
-        )
     raise ValueError("Unsupported synthesis mode")
