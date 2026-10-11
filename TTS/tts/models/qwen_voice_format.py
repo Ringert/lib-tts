@@ -58,19 +58,25 @@ def binding(model_root):
 def tensor_metadata(path):
     from safetensors import safe_open
 
-    result = {}
+    # safe_open validates the file layout without materializing tensor values.
+    # Dtypes come from the bounded JSON header; slices expose only tensor shapes.
+    with Path(path).open("rb") as source:
+        header_size = int.from_bytes(source.read(8), "little")
+        if not 0 < header_size <= 1024 * 1024:
+            raise ValueError("Invalid tensor header")
+        header = json.loads(source.read(header_size))
     with safe_open(str(path), framework="numpy") as source:
-        for name in source.keys():
-            tensor = source.get_tensor(name)
-            dtype = {"float32": "F32", "int64": "I64"}.get(
-                str(tensor.dtype), str(tensor.dtype)
-            )
-            result[name] = {"shape": list(tensor.shape), "dtype": dtype}
-    return result
+        return {
+            name: {
+                "shape": list(source.get_slice(name).get_shape()),
+                "dtype": header[name]["dtype"],
+            }
+            for name in source.keys()
+        }
 
 
-def validate_artifacts(root, manifest, expected_binding=None):
-    """Validate actual bytes and every tensor before a version is used/published."""
+def validate_artifacts(root, manifest, expected_binding=None, *, metadata_only=False):
+    """Validate binding/hashes/headers; inspect values only under the compute lock."""
     import numpy as np
     from safetensors import safe_open, SafetensorError
 
@@ -146,6 +152,21 @@ def validate_artifacts(root, manifest, expected_binding=None):
             )
             if set(actual) != set(keys):
                 raise ValueError()
+            if filename == "prompts.safetensors":
+                for name, metadata in actual.items():
+                    shape = metadata["shape"]
+                    if name.endswith("ref_code"):
+                        if (
+                            metadata["dtype"] != "I64"
+                            or len(shape) != 2
+                            or shape[1] != 16
+                            or not 1 <= shape[0] <= 400
+                        ):
+                            raise ValueError()
+                    elif metadata["dtype"] != "F32" or shape != [2048]:
+                        raise ValueError()
+            if metadata_only:
+                continue
             with safe_open(str(root / filename), framework="numpy") as source:
                 for name in keys:
                     tensor = source.get_tensor(name)
@@ -165,7 +186,10 @@ def validate_artifacts(root, manifest, expected_binding=None):
                             raise ValueError()
                     elif tensor.dtype != np.float32 or tensor.shape != (2048,):
                         raise ValueError()
-        if head_digest.hexdigest() != manifest["training"]["after"]:
+        if (
+            not metadata_only
+            and head_digest.hexdigest() != manifest["training"]["after"]
+        ):
             raise ValueError()
         training = manifest["training"]
         if (
